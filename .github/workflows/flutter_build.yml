@@ -33,6 +33,13 @@ jobs:
           flutter create --org "$ORG_DOMAIN" --project-name "app_${{ github.event.client_payload.app_id || 'main' }}" . || flutter create --org com.appfactory --project-name app_main .
           flutter pub add flutter_riverpod go_router google_fonts
 
+      - name: Upgrade Gradle Wrapper to 8.3 (Prevents Gradle 7.6.3 download errors)
+        run: |
+          if [ -f android/gradle/wrapper/gradle-wrapper.properties ]; then
+            sed -i 's/gradle-7.[0-9]+.[0-9]+-all.zip/gradle-8.3-all.zip/g' android/gradle/wrapper/gradle-wrapper.properties
+            sed -i 's/gradle-7.[0-9]+-all.zip/gradle-8.3-all.zip/g' android/gradle/wrapper/gradle-wrapper.properties
+          fi
+
       - name: Inject AI Generated Flutter Source Code
         env:
           DART_CODE: ${{ github.event.client_payload.main_dart_code }}
@@ -102,14 +109,25 @@ jobs:
       - name: Build Android AAB Bundle
         run: flutter build appbundle --release
 
-      - name: Upload APK & AAB Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-binaries-${{ github.event.client_payload.app_id || 'app' }}
-          path: |
-            build/app/outputs/flutter-apk/*.apk
-            build/app/outputs/bundle/release/*.aab
-          retention-days: 30
+      - name: Upload Binaries directly to Cloudflare R2 Bucket 📦
+        if: success()
+        run: |
+          APP_ID="${{ github.event.client_payload.app_id }}"
+          CALLBACK_URL="${{ github.event.client_payload.callback_url }}"
+          if [ -n "$CALLBACK_URL" ] && [ -n "$APP_ID" ]; then
+            APK_FILE=$(find build/app/outputs/flutter-apk -name "*.apk" | head -n 1)
+            if [ -f "$APK_FILE" ]; then
+              curl -s -X POST "$CALLBACK_URL/api/apps/$APP_ID/upload-binary?type=apk" \
+                -H "Content-Type: application/vnd.android.package-archive" \
+                --data-binary "@$APK_FILE" || true
+            fi
+            AAB_FILE="build/app/outputs/bundle/release/app-release.aab"
+            if [ -f "$AAB_FILE" ]; then
+              curl -s -X POST "$CALLBACK_URL/api/apps/$APP_ID/upload-binary?type=aab" \
+                -H "Content-Type: application/octet-stream" \
+                --data-binary "@$AAB_FILE" || true
+            fi
+          fi
 
       - name: Notify Cloudflare — Build Complete ✅
         if: always()
