@@ -1,5 +1,5 @@
 name: AI App Factory - Flutter Build Pipeline
-run-name: "Build App: ${{ github.event.client_payload.app_id || 'Flutter App' }} (${{ github.event.client_payload.package_name || 'com.appfactory.app' }})"
+run-name: "Build ${{ github.event.client_payload.app_name || github.event.client_payload.app_id }} (${{ github.event.client_payload.package_name }})"
 
 on:
   repository_dispatch:
