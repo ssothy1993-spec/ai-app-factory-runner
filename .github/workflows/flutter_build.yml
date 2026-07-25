@@ -30,7 +30,7 @@ jobs:
           if [ -z "$ORG_DOMAIN" ]; then ORG_DOMAIN="com.appfactory"; fi
           
           flutter create --org "$ORG_DOMAIN" --project-name "app_${{ github.event.client_payload.app_id || 'main' }}" . || flutter create --org com.appfactory --project-name app_main .
-          flutter pub add flutter_riverpod go_router google_fonts shared_preferences http intl
+          flutter pub add provider flutter_riverpod go_router google_fonts shared_preferences http intl
 
       - name: Upgrade Gradle Wrapper & Configure Release Signing
         run: |
@@ -109,8 +109,10 @@ jobs:
                   files_map = json.loads(files_raw)
                   if isinstance(files_map, dict):
                       for path_key, content in files_map.items():
-                          if path_key.startswith('lib/') and isinstance(content, str):
-                              os.makedirs(os.path.dirname(path_key), exist_ok=True)
+                          if (path_key.startswith('lib/') or path_key == 'pubspec.yaml') and isinstance(content, str):
+                              dirname = os.path.dirname(path_key)
+                              if dirname:
+                                  os.makedirs(dirname, exist_ok=True)
                               with open(path_key, 'w') as f:
                                   f.write(content)
                               written_files += 1
