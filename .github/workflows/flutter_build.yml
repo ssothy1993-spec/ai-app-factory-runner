@@ -26,26 +26,39 @@ jobs:
       - name: Scaffold Flutter Project via flutter create
         run: |
           PACKAGE_NAME="${{ github.event.client_payload.package_name || 'com.appfactory.app' }}"
-          # Extract org domain from package name (e.g. com.appfactory from com.appfactory.auto.756)
           ORG_DOMAIN=$(echo "$PACKAGE_NAME" | sed 's/.[^.]*$//')
           if [ -z "$ORG_DOMAIN" ]; then ORG_DOMAIN="com.appfactory"; fi
           
           flutter create --org "$ORG_DOMAIN" --project-name "app_${{ github.event.client_payload.app_id || 'main' }}" . || flutter create --org com.appfactory --project-name app_main .
-          flutter pub add flutter_riverpod go_router google_fonts
+          flutter pub add flutter_riverpod go_router google_fonts shared_preferences http intl
 
-      - name: Upgrade Gradle Wrapper to 8.3 (Prevents Gradle 7.6.3 download errors)
+      - name: Upgrade Gradle Wrapper & Configure Release Signing
         run: |
           if [ -f android/gradle/wrapper/gradle-wrapper.properties ]; then
             sed -i 's/gradle-7.[0-9]+.[0-9]+-all.zip/gradle-8.3-all.zip/g' android/gradle/wrapper/gradle-wrapper.properties
             sed -i 's/gradle-7.[0-9]+-all.zip/gradle-8.3-all.zip/g' android/gradle/wrapper/gradle-wrapper.properties
           fi
+          
+          # Inject android signing config fallback to ensure release APKs/AABs compile smoothly
+          cat << 'BUILD_GRADLE_EOF' >> android/app/build.gradle
+          android {
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.debug
+                      minifyEnabled false
+                      shrinkResources false
+                  }
+              }
+          }
+          BUILD_GRADLE_EOF
 
-      - name: Inject AI Generated Flutter Source Code
+      - name: Inject AI Generated Flutter Source Code (Multi-Screen Support)
         env:
           DART_CODE: ${{ github.event.client_payload.main_dart_code }}
+          FILES_JSON: ${{ github.event.client_payload.files_json }}
         run: |
           python3 - << 'PYEOF'
-          import os, textwrap
+          import os, json, textwrap
 
           DEFAULT_APP = textwrap.dedent("""
           import 'package:flutter/material.dart';
@@ -89,15 +102,32 @@ jobs:
           }
           """).strip()
 
-          code = os.environ.get('DART_CODE', '').strip()
-          if not code or code in ('null', '// AI source code pending generation'):
-              print("WARNING: No AI source code in payload, using default app")
-              code = DEFAULT_APP
+          files_raw = os.environ.get('FILES_JSON', '').strip()
+          written_files = 0
+          if files_raw:
+              try:
+                  files_map = json.loads(files_raw)
+                  if isinstance(files_map, dict):
+                      for path_key, content in files_map.items():
+                          if path_key.startswith('lib/') and isinstance(content, str):
+                              os.makedirs(os.path.dirname(path_key), exist_ok=True)
+                              with open(path_key, 'w') as f:
+                                  f.write(content)
+                              written_files += 1
+                              print(f"OK: wrote {path_key} ({len(content.splitlines())} lines)")
+              except Exception as e:
+                  print(f"WARNING: Exception parsing FILES_JSON: {e}")
 
-          with open('lib/main.dart', 'w') as f:
-              f.write(code)
+          if written_files == 0 or not os.path.exists('lib/main.dart'):
+              code = os.environ.get('DART_CODE', '').strip()
+              if not code or code in ('null', '// AI source code pending generation'):
+                  print("WARNING: Using default template app")
+                  code = DEFAULT_APP
 
-          print(f"OK: lib/main.dart written ({len(code.splitlines())} lines)")
+              with open('lib/main.dart', 'w') as f:
+                  f.write(code)
+
+              print(f"OK: lib/main.dart written ({len(code.splitlines())} lines)")
           PYEOF
 
       - name: Install Dependencies
@@ -114,17 +144,20 @@ jobs:
         run: |
           APP_ID="${{ github.event.client_payload.app_id }}"
           CALLBACK_URL="${{ github.event.client_payload.callback_url }}"
+          BUILD_TOKEN="${{ github.event.client_payload.build_token }}"
           if [ -n "$CALLBACK_URL" ] && [ -n "$APP_ID" ]; then
             APK_FILE=$(find build/app/outputs/flutter-apk -name "*.apk" | head -n 1)
             if [ -f "$APK_FILE" ]; then
               curl -s -X POST "$CALLBACK_URL/api/apps/$APP_ID/upload-binary?type=apk" \
                 -H "Content-Type: application/vnd.android.package-archive" \
+                -H "X-Build-Token: $BUILD_TOKEN" \
                 --data-binary "@$APK_FILE" || true
             fi
             AAB_FILE="build/app/outputs/bundle/release/app-release.aab"
             if [ -f "$AAB_FILE" ]; then
               curl -s -X POST "$CALLBACK_URL/api/apps/$APP_ID/upload-binary?type=aab" \
                 -H "Content-Type: application/octet-stream" \
+                -H "X-Build-Token: $BUILD_TOKEN" \
                 --data-binary "@$AAB_FILE" || true
             fi
           fi
@@ -140,6 +173,7 @@ jobs:
           if [ -n "$CALLBACK_URL" ] && [ -n "$APP_ID" ]; then
             curl -s -X POST "$CALLBACK_URL/api/apps/$APP_ID/build-complete" \
               -H "Content-Type: application/json" \
+              -H "X-Build-Token: $BUILD_TOKEN" \
               -d "{\"status\":\"$STATUS\",\"run_id\":\"${{ github.run_id }}\",\"build_token\":\"$BUILD_TOKEN\"}" || true
           fi
 
